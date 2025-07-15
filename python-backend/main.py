@@ -28,6 +28,7 @@ class AirlineAgentContext(BaseModel):
     flight_number: str | None = None
     account_number: str | None = None  # Account number associated with the customer
 
+# Генерирует начальный контекст - рандомный номер аккаунта. Мы заменим на инфу о сотруднике, например
 def create_initial_context() -> AirlineAgentContext:
     """
     Factory for a new AirlineAgentContext.
@@ -46,7 +47,8 @@ def create_initial_context() -> AirlineAgentContext:
     name_override="faq_lookup_tool", description_override="Lookup frequently asked questions."
 )
 async def faq_lookup_tool(question: str) -> str:
-    """Lookup answers to frequently asked questions."""
+    """Найдите ответы на часто задаваемые вопросы. Обычные заглушки без модели"""
+    
     q = question.lower()
     if "bag" in q or "baggage" in q:
         return (
@@ -68,7 +70,7 @@ async def faq_lookup_tool(question: str) -> str:
 async def update_seat(
     context: RunContextWrapper[AirlineAgentContext], confirmation_number: str, new_seat: str
 ) -> str:
-    """Update the seat for a given confirmation number."""
+    """Обновить место для указанного confirmation number."""
     context.context.confirmation_number = confirmation_number
     context.context.seat_number = new_seat
     assert context.context.flight_number is not None, "Flight number is required"
@@ -79,7 +81,7 @@ async def update_seat(
     description_override="Lookup status for a flight."
 )
 async def flight_status_tool(flight_number: str) -> str:
-    """Lookup the status for a flight."""
+    """Поиск статуса рейса."""
     return f"Flight {flight_number} is on time and scheduled to depart at gate A10."
 
 @function_tool(
@@ -87,7 +89,7 @@ async def flight_status_tool(flight_number: str) -> str:
     description_override="Lookup baggage allowance and fees."
 )
 async def baggage_tool(query: str) -> str:
-    """Lookup baggage allowance and fees."""
+    """Проверьте нормы провоза багажа и стоимость доп. багажа."""
     q = query.lower()
     if "fee" in q:
         return "Overweight bag fee is $75."
@@ -102,7 +104,7 @@ async def baggage_tool(query: str) -> str:
 async def display_seat_map(
     context: RunContextWrapper[AirlineAgentContext]
 ) -> str:
-    """Trigger the UI to show an interactive seat map to the customer."""
+    """Активируйте пользовательский интерфейс, чтобы показать клиенту интерактивную схему мест."""
     # The returned string will be interpreted by the UI to open the seat selector.
     return "DISPLAY_SEAT_MAP"
 
@@ -111,7 +113,7 @@ async def display_seat_map(
 # =========================
 
 async def on_seat_booking_handoff(context: RunContextWrapper[AirlineAgentContext]) -> None:
-    """Set a random flight number when handed off to the seat booking agent."""
+    """Установите случайный номер рейса при передаче агенту по бронированию мест."""
     context.context.flight_number = f"FLT-{random.randint(100, 999)}"
     context.context.confirmation_number = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
@@ -120,7 +122,7 @@ async def on_seat_booking_handoff(context: RunContextWrapper[AirlineAgentContext
 # =========================
 
 class RelevanceOutput(BaseModel):
-    """Schema for relevance guardrail decisions."""
+    """Эта штука нужна чтобы понимать относится ли заданный вопрос к теме авиаперелётов или нет"""
     reasoning: str
     is_relevant: bool
 
@@ -134,7 +136,7 @@ guardrail_agent = Agent(
         "It is OK for the customer to send messages such as 'Hi' or 'OK' or any other messages that are at all conversational, "
         "but if the response is non-conversational, it must be somewhat related to airline travel. "
         "Return is_relevant=True if it is, else False, plus a brief reasoning."
-    ),
+    ), # Промт для того чтобы модель понимала пропускать вопрос или нет
     output_type=RelevanceOutput,
 )
 
@@ -142,13 +144,13 @@ guardrail_agent = Agent(
 async def relevance_guardrail(
     context: RunContextWrapper[None], agent: Agent, input: str | list[TResponseInputItem]
 ) -> GuardrailFunctionOutput:
-    """Guardrail to check if input is relevant to airline topics."""
+    """Ограждение для проверки того, соответствуют ли введенные данные тематике авиакомпаний."""
     result = await Runner.run(guardrail_agent, input, context=context.context)
     final = result.final_output_as(RelevanceOutput)
     return GuardrailFunctionOutput(output_info=final, tripwire_triggered=not final.is_relevant)
 
 class JailbreakOutput(BaseModel):
-    """Schema for jailbreak guardrail decisions."""
+    """Схема для определения, является ли сообщение пользователя попыткой обойти системные инструкции или политики (JailbreakOutput)"""
     reasoning: str
     is_safe: bool
 
@@ -180,6 +182,29 @@ async def jailbreak_guardrail(
 # =========================
 # AGENTS
 # =========================
+def testing_agent_instructions(
+    run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
+) -> str:
+    ctx = run_context.context
+    confirmation = ctx.confirmation_number or "[unknown]"
+    return (
+        f"{RECOMMENDED_PROMPT_PREFIX}\n"
+        "Вы — агент для тестирования. Если вы разговариваете с клиентом, вероятно, вас перевели с агента по сортировке.\n"
+        "Используйте следующую процедуру для поддержки клиента.\n"
+        "1. Спросите у клиента какой вопрос по тестированию у него возник. "
+        "2. Дайте ответ на возникший вопрос\n"
+        "Если клиент задает вопрос, не связанный с процедурой, переведите его обратно к агенту по сортировке."
+    ) # Хороший промт префикс, с помощью которого модель понимает каким агентом она является
+
+testing_agent = Agent[AirlineAgentContext](
+    name="Агент по тестированию",
+    model="gpt-4.1",
+    handoff_description="Агент, который может отвечать на вопросы по тестированию",
+    instructions=testing_agent_instructions,
+    tools=[],
+    input_guardrails=[relevance_guardrail, jailbreak_guardrail],
+)
+
 
 def seat_booking_instructions(
     run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
@@ -195,7 +220,7 @@ def seat_booking_instructions(
         "2. Ask the customer what their desired seat number is. You can also use the display_seat_map tool to show them an interactive seat map where they can click to select their preferred seat.\n"
         "3. Use the update seat tool to update the seat on the flight.\n"
         "If the customer asks a question that is not related to the routine, transfer back to the triage agent."
-    )
+    ) # Хороший промт префикс, с помощью которого модель понимает каким агентом она является
 
 seat_booking_agent = Agent[AirlineAgentContext](
     name="Seat Booking Agent",
@@ -219,7 +244,7 @@ def flight_status_instructions(
         "   If either is not available, ask the customer for the missing information. If you have both, confirm with the customer that these are correct.\n"
         "2. Use the flight_status_tool to report the status of the flight.\n"
         "If the customer asks a question that is not related to flight status, transfer back to the triage agent."
-    )
+    ) # Хороший промт префикс, с помощью которого модель понимает каким агентом она является
 
 flight_status_agent = Agent[AirlineAgentContext](
     name="Flight Status Agent",
@@ -267,7 +292,7 @@ def cancellation_instructions(
         "   If either is not available, ask the customer for the missing information. If you have both, confirm with the customer that these are correct.\n"
         "2. If the customer confirms, use the cancel_flight tool to cancel their flight.\n"
         "If the customer asks anything else, transfer back to the triage agent."
-    )
+    ) # Хороший промт префикс, с помощью которого модель понимает каким агентом она является
 
 cancellation_agent = Agent[AirlineAgentContext](
     name="Cancellation Agent",
@@ -287,15 +312,15 @@ faq_agent = Agent[AirlineAgentContext](
     Use the following routine to support the customer.
     1. Identify the last question asked by the customer.
     2. Use the faq lookup tool to get the answer. Do not rely on your own knowledge.
-    3. Respond to the customer with the answer""",
+    3. Respond to the customer with the answer""", # Хороший промт префикс, с помощью которого модель понимает каким агентом она является
     tools=[faq_lookup_tool],
     input_guardrails=[relevance_guardrail, jailbreak_guardrail],
 )
 
 triage_agent = Agent[AirlineAgentContext](
-    name="Triage Agent",
+    name="Агент сортировки",
     model="gpt-4.1",
-    handoff_description="A triage agent that can delegate a customer's request to the appropriate agent.",
+    handoff_description="Агент сортировки определает какому агенту нужно делегировать запрос клиента.",
     instructions=(
         f"{RECOMMENDED_PROMPT_PREFIX} "
         "You are a helpful triaging agent. You can use your tools to delegate questions to other appropriate agents."
@@ -305,6 +330,7 @@ triage_agent = Agent[AirlineAgentContext](
         handoff(agent=cancellation_agent, on_handoff=on_cancellation_handoff),
         faq_agent,
         handoff(agent=seat_booking_agent, on_handoff=on_seat_booking_handoff),
+        testing_agent
     ],
     input_guardrails=[relevance_guardrail, jailbreak_guardrail],
 )
@@ -312,6 +338,7 @@ triage_agent = Agent[AirlineAgentContext](
 # Set up handoff relationships
 faq_agent.handoffs.append(triage_agent)
 seat_booking_agent.handoffs.append(triage_agent)
+testing_agent.handoffs.append(triage_agent)
 flight_status_agent.handoffs.append(triage_agent)
 # Add cancellation agent handoff back to triage
 cancellation_agent.handoffs.append(triage_agent)

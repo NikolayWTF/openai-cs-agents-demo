@@ -8,20 +8,21 @@ import logging
 
 from main import (
     triage_agent,
-    faq_agent,
-    seat_booking_agent,
-    flight_status_agent,
-    cancellation_agent,
+    # faq_agent,
+    # seat_booking_agent,
+    # flight_status_agent,
+    # cancellation_agent,
+    testing_agent,
     create_initial_context,
 )
 
 from agents import (
     Runner,
     ItemHelpers,
-    MessageOutputItem,
-    HandoffOutputItem,
-    ToolCallItem,
-    ToolCallOutputItem,
+    MessageOutputItem,  # Обычный ответ
+    HandoffOutputItem,  # Переход к другому агенту
+    ToolCallItem,       # Вызов инструмента
+    ToolCallOutputItem, # Результаты вызова инструмента
     InputGuardrailTripwireTriggered,
     Handoff,
 )
@@ -109,10 +110,11 @@ def _get_agent_by_name(name: str):
     """Return the agent object by name."""
     agents = {
         triage_agent.name: triage_agent,
-        faq_agent.name: faq_agent,
-        seat_booking_agent.name: seat_booking_agent,
-        flight_status_agent.name: flight_status_agent,
-        cancellation_agent.name: cancellation_agent,
+        testing_agent.name: testing_agent,
+        # faq_agent.name: faq_agent,
+        # seat_booking_agent.name: seat_booking_agent,
+        # flight_status_agent.name: flight_status_agent,
+        # cancellation_agent.name: cancellation_agent,
     }
     return agents.get(name, triage_agent)
 
@@ -141,10 +143,11 @@ def _build_agents_list() -> List[Dict[str, Any]]:
         }
     return [
         make_agent_dict(triage_agent),
-        make_agent_dict(faq_agent),
-        make_agent_dict(seat_booking_agent),
-        make_agent_dict(flight_status_agent),
-        make_agent_dict(cancellation_agent),
+        make_agent_dict(testing_agent),
+        # make_agent_dict(faq_agent),
+        # make_agent_dict(seat_booking_agent),
+        # make_agent_dict(flight_status_agent),
+        # make_agent_dict(cancellation_agent),
     ]
 
 # =========================
@@ -157,7 +160,7 @@ async def chat_endpoint(req: ChatRequest):
     Main chat endpoint for agent orchestration.
     Handles conversation state, agent routing, and guardrail checks.
     """
-    # Initialize or retrieve conversation state
+    # Если сессия новая — создаётся уникальный ID, инициализируется triage_agent, создаётся пустой контекст и история сообщений.
     is_new = not req.conversation_id or conversation_store.get(req.conversation_id) is None
     if is_new:
         conversation_id: str = uuid4().hex
@@ -168,28 +171,35 @@ async def chat_endpoint(req: ChatRequest):
             "context": ctx,
             "current_agent": current_agent_name,
         }
+        # Если сообщение пустое, возвращается приветствие "Привет Мир".
         if req.message.strip() == "":
             conversation_store.save(conversation_id, state)
             return ChatResponse(
                 conversation_id=conversation_id,
                 current_agent=current_agent_name,
-                messages=[],
+                messages=[MessageResponse(content="Привет Мир", agent="user")],
                 events=[],
                 context=ctx.model_dump(),
                 agents=_build_agents_list(),
                 guardrails=[],
             )
+    # Обработка существующей сессии
     else:
+        # Получаем текущее состояние из хранилища.
         conversation_id = req.conversation_id  # type: ignore
         state = conversation_store.get(conversation_id)
 
+    # Добавляем новое сообщение от пользователя в историю
     current_agent = _get_agent_by_name(state["current_agent"])
     state["input_items"].append({"content": req.message, "role": "user"})
     old_context = state["context"].model_dump().copy()
     guardrail_checks: List[GuardrailCheck] = []
 
+    # Запускаем current_agent с текущим сообщением и контекстом.
     try:
         result = await Runner.run(current_agent, state["input_items"], context=state["context"])
+
+    # Если сработал guardrail (например, запрещённый вопрос), возвращаем отказ и добавляем информацию в guardrails
     except InputGuardrailTripwireTriggered as e:
         failed = e.guardrail_result.guardrail
         gr_output = e.guardrail_result.output.output_info
@@ -205,7 +215,7 @@ async def chat_endpoint(req: ChatRequest):
                 passed=(g != failed),
                 timestamp=gr_timestamp,
             ))
-        refusal = "Sorry, I can only answer questions related to airline travel."
+        refusal = "Вы задали вопрос не про самолёты."
         state["input_items"].append({"role": "assistant", "content": refusal})
         return ChatResponse(
             conversation_id=conversation_id,
@@ -217,15 +227,35 @@ async def chat_endpoint(req: ChatRequest):
             guardrails=guardrail_checks,
         )
 
+    # return ChatResponse(
+    #         conversation_id=conversation_id,
+    #         current_agent=current_agent.name,
+    #         messages=[MessageResponse(content="Я не могу отвечать на вопросы про самолёты, потому что нет подписки на ChatGPT :(", agent=current_agent.name)],
+    #         events=[],
+    #         context=state["context"].model_dump(),
+    #         agents=_build_agents_list(),
+    #         guardrails=guardrail_checks,
+    #     )
     messages: List[MessageResponse] = []
     events: List[AgentEvent] = []
 
+    # Обработка результатов агента
     for item in result.new_items:
-        if isinstance(item, MessageOutputItem):
+
+#         Перебираем все элементы ответа:
+
+#           MessageOutputItem → обычный ответ.
+#           HandoffOutputItem → переход к другому агенту.
+#           ToolCallItem → вызов инструмента.
+#           ToolCallOutputItem → результат вызова инструмента.
+
+#       Все эти события логируются и отправляются в UI через AgentEvent.
+
+        if isinstance(item, MessageOutputItem): # Обычный ответ
             text = ItemHelpers.text_message_output(item)
             messages.append(MessageResponse(content=text, agent=item.agent.name))
             events.append(AgentEvent(id=uuid4().hex, type="message", agent=item.agent.name, content=text))
-        # Handle handoff output and agent switching
+        # Переход к другому агенту.
         elif isinstance(item, HandoffOutputItem):
             # Record the handoff event
             events.append(
@@ -233,7 +263,7 @@ async def chat_endpoint(req: ChatRequest):
                     id=uuid4().hex,
                     type="handoff",
                     agent=item.source_agent.name,
-                    content=f"{item.source_agent.name} -> {item.target_agent.name}",
+                    content=f"{item.source_agent.name} -> {item.target_agent.name}", # Поменяли агента
                     metadata={"source_agent": item.source_agent.name, "target_agent": item.target_agent.name},
                 )
             )
@@ -264,7 +294,7 @@ async def chat_endpoint(req: ChatRequest):
                             )
                         )
             current_agent = item.target_agent
-        elif isinstance(item, ToolCallItem):
+        elif isinstance(item, ToolCallItem): # Вызов инструмента
             tool_name = getattr(item.raw_item, "name", None)
             raw_args = getattr(item.raw_item, "arguments", None)
             tool_args: Any = raw_args
@@ -291,7 +321,7 @@ async def chat_endpoint(req: ChatRequest):
                         agent=item.agent.name,
                     )
                 )
-        elif isinstance(item, ToolCallOutputItem):
+        elif isinstance(item, ToolCallOutputItem): # Результат вызова инструмента
             events.append(
                 AgentEvent(
                     id=uuid4().hex,
@@ -303,8 +333,10 @@ async def chat_endpoint(req: ChatRequest):
             )
 
     new_context = state["context"].dict()
+    # Находим изменения в контексте
     changes = {k: new_context[k] for k in new_context if old_context.get(k) != new_context[k]}
-    if changes:
+    # Если контекст изменился, то записываем событие context_update
+    if changes: # 
         events.append(
             AgentEvent(
                 id=uuid4().hex,
@@ -314,7 +346,7 @@ async def chat_endpoint(req: ChatRequest):
                 metadata={"changes": changes},
             )
         )
-
+    # Обновляем историю и текущего агента.
     state["input_items"] = result.to_input_list()
     state["current_agent"] = current_agent.name
     conversation_store.save(conversation_id, state)
@@ -335,6 +367,14 @@ async def chat_endpoint(req: ChatRequest):
                 passed=True,
                 timestamp=time.time() * 1000,
             ))
+
+    # Собираем финальный ответ:
+
+    # список сообщений;
+    # список событий;
+    # текущий контекст;
+    # список агентов;
+    # результаты guardrail'ов.
 
     return ChatResponse(
         conversation_id=conversation_id,
