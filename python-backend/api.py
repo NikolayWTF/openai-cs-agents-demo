@@ -8,11 +8,8 @@ import logging
 
 from main import (
     triage_agent,
-    # faq_agent,
-    # seat_booking_agent,
-    # flight_status_agent,
-    # cancellation_agent,
-    testing_agent,
+    divide_agent,
+    multiply_agent,
     create_initial_context,
 )
 
@@ -110,11 +107,8 @@ def _get_agent_by_name(name: str):
     """Return the agent object by name."""
     agents = {
         triage_agent.name: triage_agent,
-        testing_agent.name: testing_agent,
-        # faq_agent.name: faq_agent,
-        # seat_booking_agent.name: seat_booking_agent,
-        # flight_status_agent.name: flight_status_agent,
-        # cancellation_agent.name: cancellation_agent,
+        divide_agent.name: divide_agent,
+        multiply_agent.name: multiply_agent
     }
     return agents.get(name, triage_agent)
 
@@ -143,11 +137,8 @@ def _build_agents_list() -> List[Dict[str, Any]]:
         }
     return [
         make_agent_dict(triage_agent),
-        make_agent_dict(testing_agent),
-        # make_agent_dict(faq_agent),
-        # make_agent_dict(seat_booking_agent),
-        # make_agent_dict(flight_status_agent),
-        # make_agent_dict(cancellation_agent),
+        make_agent_dict(multiply_agent),
+        make_agent_dict(divide_agent),
     ]
 
 # =========================
